@@ -1,6 +1,5 @@
-import { useState } from 'react';
-import { db } from '../db.js';
-import { useAuth } from '../context/AuthContext.jsx';
+import { useState, useEffect } from 'react';
+import { api } from '../api.js';
 import { useToast } from '../context/ToastContext.jsx';
 import { navigate } from '../router.jsx';
 import Calendar from '../components/Calendar.jsx';
@@ -13,19 +12,35 @@ const du = d => Math.ceil((new Date(d) - new Date(new Date().toDateString())) / 
 function initToolForm() { return { title: '', url: '', icon: '🔗', color: '#00e5b4' }; }
 
 export default function DashboardView() {
-  const { user } = useAuth();
   const { showToast } = useToast();
-  const [tick, setTick] = useState(0);
+  const [tick, setTick]       = useState(0);
   const refresh = () => setTick(t => t + 1);
-  const [toolModal, setToolModal] = useState(false);
-  const [toolForm, setToolForm] = useState(initToolForm());
-  const [dayModal, setDayModal] = useState(null); // { date, evts }
 
-  const tools    = db.getDashboardLinks(user.userId);
-  const allEvts  = db.getAllUserEvents(user.userId);
-  const subjects = db.getAllSubjects(user.userId);
-  const subMap   = Object.fromEntries(subjects.map(s => [s.id, s]));
-  const years    = db.getYears(user.userId);
+  const [tools,    setTools]    = useState([]);
+  const [allEvts,  setAllEvts]  = useState([]);
+  const [subjects, setSubjects] = useState([]);
+  const [years,    setYears]    = useState([]);
+  const [user,     setUser]     = useState(null);
+
+  const [toolModal, setToolModal] = useState(false);
+  const [toolForm,  setToolForm]  = useState(initToolForm());
+  const [dayModal,  setDayModal]  = useState(null);
+
+  useEffect(() => {
+    Promise.all([
+      api.getDashboardLinks(),
+      api.getAllEvents(),
+      api.getAllSubjects(),
+      api.getYears(),
+      fetch('http://localhost:3001/api/auth/me', {
+        headers: { Authorization: `Bearer ${localStorage.getItem('uniorg_token')}` },
+      }).then(r => r.json()),
+    ]).then(([t, e, s, y, u]) => {
+      setTools(t); setAllEvts(e); setSubjects(s); setYears(y); setUser(u);
+    }).catch(() => {});
+  }, [tick]);
+
+  const subMap = Object.fromEntries(subjects.map(s => [s.id, s]));
 
   const upcoming = allEvts
     .filter(e => { const d = du(e.date); return d >= 0 && d <= 30; })
@@ -34,19 +49,21 @@ export default function DashboardView() {
 
   const greeting = () => { const h = new Date().getHours(); return h < 12 ? 'Buenos días' : h < 18 ? 'Buenas tardes' : 'Buenas noches'; };
 
-  const addTool = e => {
+  const addTool = async e => {
     e.preventDefault();
     if (!toolForm.title || !toolForm.url) { showToast('Nombre y URL son requeridos', 'error'); return; }
-    db.createDashboardLink({ userId: user.userId, ...toolForm });
-    setToolModal(false); setToolForm(initToolForm()); refresh();
-    showToast('Herramienta agregada', 'success');
+    try {
+      await api.createDashboardLink(toolForm);
+      setToolModal(false); setToolForm(initToolForm()); refresh();
+      showToast('Herramienta agregada', 'success');
+    } catch (err) { showToast(err.message, 'error'); }
   };
 
   return (
     <div>
       <div className="view-header">
         <div>
-          <h1 className="view-title">{greeting()}, <span className="accent">{user.name.split(' ')[0]}</span></h1>
+          <h1 className="view-title">{greeting()}, <span className="accent">{user?.name?.split(' ')[0] ?? '...'}</span></h1>
           <p className="view-subtitle">{new Date().toLocaleDateString('es-AR', { weekday:'long', year:'numeric', month:'long', day:'numeric' })}</p>
         </div>
       </div>
@@ -70,7 +87,7 @@ export default function DashboardView() {
                     <span className="tool-icon" style={{ background: t.color + '25', color: t.color }}>{t.icon}</span>
                     <span className="tool-title">{t.title}</span>
                   </a>
-                  <button className="tool-delete btn-icon" onClick={() => { db.deleteDashboardLink(t.id); refresh(); }}>✕</button>
+                  <button className="tool-delete btn-icon" onClick={async () => { await api.deleteDashboardLink(t.id); refresh(); }}>✕</button>
                 </div>
               ))}
             </div>
@@ -120,7 +137,6 @@ export default function DashboardView() {
         </aside>
       </div>
 
-      {/* Add tool modal */}
       {toolModal && (
         <Modal title="Agregar herramienta" onClose={() => setToolModal(false)}
           footer={<><button className="btn btn-ghost" onClick={() => setToolModal(false)}>Cancelar</button><button className="btn btn-primary" form="tool-form" type="submit">Guardar</button></>}
@@ -138,7 +154,6 @@ export default function DashboardView() {
         </Modal>
       )}
 
-      {/* Day events modal */}
       {dayModal && (
         <Modal title={new Date(dayModal.date + 'T12:00:00').toLocaleDateString('es-AR', { weekday:'long', day:'numeric', month:'long' })} onClose={() => setDayModal(null)}>
           {dayModal.evts.map(e => (

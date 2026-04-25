@@ -1,6 +1,5 @@
-import { useState } from 'react';
-import { db } from '../db.js';
-import { useAuth } from '../context/AuthContext.jsx';
+import { useState, useEffect } from 'react';
+import { api } from '../api.js';
 import { useToast } from '../context/ToastContext.jsx';
 import { navigate } from '../router.jsx';
 import Modal from '../components/Modal.jsx';
@@ -13,52 +12,79 @@ function initYearForm()    { return { name: '', year: new Date().getFullYear(), 
 function initSubjectForm() { return { name: '', code: '', professor: '', color: SUBJECT_COLORS[0] }; }
 
 export default function YearsView({ yearId }) {
-  const { user } = useAuth();
   const { showToast } = useToast();
   const [tick, setTick] = useState(0);
   const refresh = () => setTick(t => t + 1);
 
-  const [yearModal, setYearModal]       = useState(false);
-  const [subjectModal, setSubjectModal] = useState(false);
-  const [yearForm, setYearForm]         = useState(initYearForm);
-  const [subjectForm, setSubjectForm]   = useState(initSubjectForm);
+  const [years,            setYears]           = useState([]);
+  const [year,             setYear]            = useState(null);
+  const [subjects,         setSubjects]        = useState([]);
+  const [yearSubjectsMap,  setYearSubjectsMap] = useState({});  // yearId → subjects[]
+  const [subjectEvtsMap,   setSubjectEvtsMap]  = useState({});  // subjectId → events[]
 
-  const years = db.getYears(user.userId);
-  const year  = yearId ? db.getYearById(yearId) : null;
-  const subjects = year ? db.getSubjects(year.id) : [];
+  const [yearModal,    setYearModal]    = useState(false);
+  const [subjectModal, setSubjectModal] = useState(false);
+  const [yearForm,     setYearForm]     = useState(initYearForm);
+  const [subjectForm,  setSubjectForm]  = useState(initSubjectForm);
+
+  useEffect(() => {
+    if (yearId) {
+      // Vista de materias de un año
+      Promise.all([api.getYears(), api.getSubjects(yearId)]).then(async ([yrs, subs]) => {
+        setYears(yrs);
+        setYear(yrs.find(y => y.id === yearId) ?? null);
+        setSubjects(subs);
+        const evtMap = {};
+        await Promise.all(subs.map(async s => { evtMap[s.id] = await api.getEvents(s.id); }));
+        setSubjectEvtsMap(evtMap);
+      });
+    } else {
+      // Vista de lista de años
+      api.getYears().then(async yrs => {
+        setYears(yrs);
+        const subMap = {};
+        await Promise.all(yrs.map(async y => { subMap[y.id] = await api.getSubjects(y.id); }));
+        setYearSubjectsMap(subMap);
+      });
+    }
+  }, [yearId, tick]);
 
   const setYF = k => e => setYearForm(f => ({ ...f, [k]: e.target.value }));
   const setSF = k => e => setSubjectForm(f => ({ ...f, [k]: e.target.value }));
 
-  const addYear = e => {
+  const addYear = async e => {
     e.preventDefault();
     if (!yearForm.name) { showToast('Ingresá un nombre', 'error'); return; }
-    db.createYear({ userId: user.userId, ...yearForm, year: parseInt(yearForm.year) });
-    setYearModal(false); setYearForm(initYearForm()); refresh();
-    showToast('Año creado', 'success');
+    try {
+      await api.createYear({ ...yearForm, year: parseInt(yearForm.year) });
+      setYearModal(false); setYearForm(initYearForm()); refresh();
+      showToast('Año creado', 'success');
+    } catch (err) { showToast(err.message, 'error'); }
   };
 
-  const addSubject = e => {
+  const addSubject = async e => {
     e.preventDefault();
     if (!subjectForm.name) { showToast('Ingresá un nombre', 'error'); return; }
-    db.createSubject({ yearId: year.id, userId: user.userId, ...subjectForm });
-    setSubjectModal(false); setSubjectForm(initSubjectForm()); refresh();
-    showToast('Materia creada', 'success');
+    try {
+      await api.createSubject({ yearId: year.id, ...subjectForm });
+      setSubjectModal(false); setSubjectForm(initSubjectForm()); refresh();
+      showToast('Materia creada', 'success');
+    } catch (err) { showToast(err.message, 'error'); }
   };
 
-  const deleteYear = (id, e) => {
+  const deleteYear = async (id, e) => {
     e.stopPropagation();
     if (!confirm('¿Eliminar este año y todas sus materias?')) return;
-    db.deleteYear(id); refresh(); showToast('Año eliminado', 'info');
+    await api.deleteYear(id); refresh(); showToast('Año eliminado', 'info');
   };
-  const deleteSubject = (id, e) => {
+  const deleteSubject = async (id, e) => {
     e.stopPropagation();
     if (!confirm('¿Eliminar esta materia?')) return;
-    db.deleteSubject(id); refresh(); showToast('Materia eliminada', 'info');
+    await api.deleteSubject(id); refresh(); showToast('Materia eliminada', 'info');
   };
 
   // ── Years list ────────────────────────────────────────────────
-  if (!year) return (
+  if (!yearId) return (
     <div>
       <div className="view-header">
         <div>
@@ -78,7 +104,7 @@ export default function YearsView({ yearId }) {
           </div>
         )}
         {years.map(y => {
-          const subs = db.getSubjects(y.id);
+          const subs = yearSubjectsMap[y.id] ?? [];
           return (
             <div key={y.id} className="year-card" style={{ '--year-color': y.color }} onClick={() => navigate('/years/' + y.id)}>
               <div className="year-card-header">
@@ -117,6 +143,8 @@ export default function YearsView({ yearId }) {
   );
 
   // ── Subjects for a year ───────────────────────────────────────
+  if (!year) return null;
+
   return (
     <div>
       <div className="view-header">
@@ -138,7 +166,7 @@ export default function YearsView({ yearId }) {
           </div>
         )}
         {subjects.map(s => {
-          const evts = db.getEvents(s.id);
+          const evts = subjectEvtsMap[s.id] ?? [];
           const next = evts.filter(e => new Date(e.date) >= new Date()).sort((a,b) => new Date(a.date)-new Date(b.date))[0];
           return (
             <div key={s.id} className="subject-card" onClick={() => navigate('/subjects/' + s.id)}>

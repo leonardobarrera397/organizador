@@ -1,0 +1,9 @@
+[build]
+  command   = "npm run build"
+  publish   = "dist"
+
+# Redirige todas las rutas al index.html para que funcione el hash router en producción
+[[redirects]]
+  from   = "/*"
+  to     = "/index.html"
+  status = 200

@@ -1,6 +1,5 @@
-import { useState, useRef, useCallback } from 'react';
-import { db } from '../db.js';
-import { useAuth } from '../context/AuthContext.jsx';
+import { useState, useEffect, useRef, useCallback } from 'react';
+import { api } from '../api.js';
 import { useToast } from '../context/ToastContext.jsx';
 import { navigate } from '../router.jsx';
 import Modal from '../components/Modal.jsx';
@@ -16,7 +15,7 @@ const EVENT_TYPES = [
 ];
 const ec = t => EVENT_TYPES.find(e => e.value === t)?.color ?? '#60a5fa';
 const el = t => EVENT_TYPES.find(e => e.value === t)?.label ?? t;
-const NOTE_COLORS = ['#fef08a','#86efac','#93c5fd','#f9a8d4','#c4b5fd','#fed7aa'];
+const NOTE_COLORS    = ['#fef08a','#86efac','#93c5fd','#f9a8d4','#c4b5fd','#fed7aa'];
 const SUBJECT_COLORS = ['#00e5b4','#f59e0b','#a78bfa','#fb7185','#60a5fa','#34d399','#f97316','#e879f9'];
 
 function daysUntil(d) { return Math.ceil((new Date(d) - new Date(new Date().toDateString())) / 86400000); }
@@ -80,105 +79,137 @@ function PostIt({ note, onUpdate, onDelete }) {
 
 // ── Main view ───────────────────────────────────────────────────
 export default function SubjectDetailView({ subjectId }) {
-  const { user }    = useAuth();
   const { showToast } = useToast();
-  const [tab, setTab] = useState('info');
+  const [tab,  setTab]  = useState('info');
   const [tick, setTick] = useState(0);
   const refresh = () => setTick(t => t + 1);
 
-  const subject = db.getSubjectById(subjectId);
-  if (!subject) { navigate('/years'); return null; }
-  const year = db.getYearById(subject.yearId);
+  const [subject, setSubject] = useState(null);
+  const [year,    setYear]    = useState(null);
+  const [events,  setEvents]  = useState([]);
+  const [links,   setLinks]   = useState([]);
+  const [files,   setFiles]   = useState([]);
+  const [notes,   setNotes]   = useState([]);
+  const [grades,  setGrades]  = useState([]);
 
-  // Read fresh data each render
-  const events  = db.getEvents(subject.id).sort((a,b)=>new Date(a.date)-new Date(b.date));
-  const links   = db.getSubjectLinks(subject.id);
-  const files   = db.getFileMeta(subject.id);
-  const notes   = db.getNotes(subject.id);
-  const grades  = db.getGrades(subject.id);
-  const upcoming = events.filter(e => new Date(e.date) >= new Date());
-  const past     = events.filter(e => new Date(e.date) < new Date());
-
-  // Modal states
+  // Todos los hooks deben declararse antes de cualquier return condicional
   const [showAddEvent,    setShowAddEvent]    = useState(false);
   const [showAddLink,     setShowAddLink]     = useState(false);
   const [showAddGrade,    setShowAddGrade]    = useState(false);
   const [showEditSubject, setShowEditSubject] = useState(false);
 
-  // Form states
   const today = new Date().toISOString().slice(0,10);
   const [evtForm,  setEvtForm]  = useState({ title:'', date:today, type:'exam', description:'' });
   const [lkForm,   setLkForm]   = useState({ title:'', url:'' });
   const [grForm,   setGrForm]   = useState({ name:'', score:'', maxScore:'10', weight:'1' });
-  const [editForm, setEditForm] = useState({ name: subject.name, code: subject.code??'', professor: subject.professor??'', color: subject.color });
+  const [editForm, setEditForm] = useState({ name:'', code:'', professor:'', color:'' });
 
   const [selectedNoteColor, setSelectedNoteColor] = useState(NOTE_COLORS[0]);
   const fileInputRef = useRef(null);
 
+  useEffect(() => {
+    api.getSubject(subjectId)
+      .then(async sub => {
+        if (!sub) { navigate('/years'); return; }
+        setSubject(sub);
+        // Inicializa el form de edición con los datos reales
+        setEditForm({ name: sub.name, code: sub.code??'', professor: sub.professor??'', color: sub.color });
+        const [yrs, evts, lks, fls, nts, grs] = await Promise.all([
+          api.getYears(),
+          api.getEvents(sub.id),
+          api.getSubjectLinks(sub.id),
+          api.getFiles(sub.id),
+          api.getNotes(sub.id),
+          api.getGrades(sub.id),
+        ]);
+        setYear(yrs.find(y => y.id === sub.year_id || y.id === sub.yearId) ?? null);
+        setEvents(evts.sort((a,b) => new Date(a.date) - new Date(b.date)));
+        setLinks(lks); setFiles(fls); setNotes(nts); setGrades(grs);
+      })
+      .catch(() => navigate('/years'));
+  }, [subjectId, tick]);
+
+  if (!subject) return null;
+
+  const upcoming = events.filter(e => new Date(e.date) >= new Date());
+  const past     = events.filter(e => new Date(e.date) < new Date());
+
   // ── Handlers ──────────────────────────────────────────────────
-  const saveEvent = e => {
+  const saveEvent = async e => {
     e.preventDefault();
     if (!evtForm.title || !evtForm.date) { showToast('Título y fecha requeridos', 'error'); return; }
-    db.createEvent({ subjectId: subject.id, userId: user.userId, ...evtForm });
-    setShowAddEvent(false); setEvtForm({ title:'', date:today, type:'exam', description:'' }); refresh();
-    showToast('Fecha guardada', 'success');
-  };
-  const saveLink = e => {
-    e.preventDefault();
-    if (!lkForm.title || !lkForm.url) { showToast('Nombre y URL requeridos', 'error'); return; }
-    db.createSubjectLink({ subjectId: subject.id, userId: user.userId, ...lkForm });
-    setShowAddLink(false); setLkForm({ title:'', url:'' }); refresh();
-    showToast('Link guardado', 'success');
-  };
-  const saveGrade = e => {
-    e.preventDefault();
-    if (!grForm.name || grForm.score === '') { showToast('Nombre y nota requeridos', 'error'); return; }
-    db.createGrade({ subjectId: subject.id, userId: user.userId, ...grForm });
-    setShowAddGrade(false); setGrForm({ name:'', score:'', maxScore:'10', weight:'1' }); refresh();
-    showToast('Nota guardada', 'success');
-  };
-  const saveEdit = e => {
-    e.preventDefault();
-    if (!editForm.name) { showToast('El nombre es requerido', 'error'); return; }
-    db.updateSubject(subject.id, editForm);
-    Object.assign(subject, editForm);
-    setShowEditSubject(false); refresh();
-    showToast('Materia actualizada', 'success');
+    try {
+      await api.createEvent({ subjectId: subject.id, ...evtForm });
+      setShowAddEvent(false); setEvtForm({ title:'', date:today, type:'exam', description:'' }); refresh();
+      showToast('Fecha guardada', 'success');
+    } catch (err) { showToast(err.message, 'error'); }
   };
 
-  const handleFiles = async files => {
-    for (const f of files) {
-      const buf = await f.arrayBuffer();
-      const meta = db.createFileMeta({ subjectId: subject.id, userId: user.userId, name: f.name, type: f.type, size: f.size });
-      await db.saveFileContent(meta.id, buf);
-    }
-    refresh(); showToast(`${files.length} archivo(s) guardado(s)`, 'success');
+  const saveLink = async e => {
+    e.preventDefault();
+    if (!lkForm.title || !lkForm.url) { showToast('Nombre y URL requeridos', 'error'); return; }
+    try {
+      await api.createSubjectLink({ subjectId: subject.id, ...lkForm });
+      setShowAddLink(false); setLkForm({ title:'', url:'' }); refresh();
+      showToast('Link guardado', 'success');
+    } catch (err) { showToast(err.message, 'error'); }
   };
-  const downloadFile = async id => {
-    const meta = db.getFileMeta(subject.id).find(f => f.id === id);
-    const buf  = await db.getFileContent(id);
-    if (!buf) { showToast('Archivo no encontrado', 'error'); return; }
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(new Blob([buf], { type: meta?.type ?? 'application/octet-stream' }));
-    a.download = meta?.name ?? 'archivo'; a.click();
+
+  const saveGrade = async e => {
+    e.preventDefault();
+    if (!grForm.name || grForm.score === '') { showToast('Nombre y nota requeridos', 'error'); return; }
+    try {
+      await api.createGrade({ subjectId: subject.id, ...grForm });
+      setShowAddGrade(false); setGrForm({ name:'', score:'', maxScore:'10', weight:'1' }); refresh();
+      showToast('Nota guardada', 'success');
+    } catch (err) { showToast(err.message, 'error'); }
   };
-  const addNote = () => {
-    db.createNote({ subjectId: subject.id, userId: user.userId, content: '', color: selectedNoteColor, x: 20 + Math.random()*200, y: 20 + Math.random()*150 });
-    refresh();
+
+  const saveEdit = async e => {
+    e.preventDefault();
+    if (!editForm.name) { showToast('El nombre es requerido', 'error'); return; }
+    try {
+      await api.updateSubject(subject.id, editForm);
+      setSubject(s => ({ ...s, ...editForm }));
+      setShowEditSubject(false);
+      showToast('Materia actualizada', 'success');
+    } catch (err) { showToast(err.message, 'error'); }
+  };
+
+  const handleFiles = async fileList => {
+    try {
+      await Promise.all([...fileList].map(f => api.uploadFile(subject.id, f)));
+      refresh(); showToast(`${fileList.length} archivo(s) guardado(s)`, 'success');
+    } catch (err) { showToast(err.message, 'error'); }
+  };
+
+  const downloadFile = async (id, name, mimeType) => {
+    try {
+      const blob = await api.downloadFile(id);
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = name ?? 'archivo'; a.click();
+    } catch (err) { showToast(err.message, 'error'); }
+  };
+
+  const addNote = async () => {
+    try {
+      await api.createNote({ subjectId: subject.id, content: '', color: selectedNoteColor, x: 20 + Math.random()*200, y: 20 + Math.random()*150 });
+      refresh();
+    } catch (err) { showToast(err.message, 'error'); }
   };
 
   // Grade average
   const calcAvg = gs => { if (!gs.length) return 0; const tw=gs.reduce((a,g)=>a+g.weight,0); return gs.reduce((a,g)=>a+(g.score/g.maxScore)*10*g.weight,0)/tw; };
   const avg = calcAvg(grades);
 
-  // ── Tabs ──────────────────────────────────────────────────────
   const TABS = [
-    { id:'info',       label:'ℹ Info' },
-    { id:'fechas',     label:'📅 Fechas' },
-    { id:'links',      label:'🔗 Links' },
-    { id:'archivos',   label:'📁 Archivos' },
-    { id:'notas',      label:'📝 Post-its' },
-    { id:'califs',     label:'🧮 Notas' },
+    { id:'info',     label:'ℹ Info' },
+    { id:'fechas',   label:'📅 Fechas' },
+    { id:'links',    label:'🔗 Links' },
+    { id:'archivos', label:'📁 Archivos' },
+    { id:'notas',    label:'📝 Post-its' },
+    { id:'califs',   label:'🧮 Notas' },
   ];
 
   return (
@@ -244,11 +275,11 @@ export default function SubjectDetailView({ subjectId }) {
           {events.length === 0 && <div className="empty-card"><div className="empty-icon">📅</div><h3>Sin fechas</h3><p>Agregá exámenes, parciales y entregas</p></div>}
           {upcoming.length > 0 && <>
             <h3 className="section-heading">Próximos</h3>
-            <div className="events-list">{upcoming.map(e => <EventItem key={e.id} event={e} onDelete={id=>{db.deleteEvent(id);refresh();showToast('Evento eliminado','info')}} />)}</div>
+            <div className="events-list">{upcoming.map(e => <EventItem key={e.id} event={e} onDelete={async id=>{await api.deleteEvent(id);refresh();showToast('Evento eliminado','info');}} />)}</div>
           </>}
           {past.length > 0 && <>
             <h3 className="section-heading muted">Pasados</h3>
-            <div className="events-list past">{past.map(e => <EventItem key={e.id} event={e} onDelete={id=>{db.deleteEvent(id);refresh();showToast('Evento eliminado','info')}} />)}</div>
+            <div className="events-list past">{past.map(e => <EventItem key={e.id} event={e} onDelete={async id=>{await api.deleteEvent(id);refresh();showToast('Evento eliminado','info');}} />)}</div>
           </>}
         </div>
       )}
@@ -271,7 +302,7 @@ export default function SubjectDetailView({ subjectId }) {
                         <span className="link-url">{l.url.replace(/^https?:\/\//,'').slice(0,40)}</span>
                       </div>
                     </a>
-                    <button className="btn-icon" onClick={() => { db.deleteSubjectLink(l.id); refresh(); showToast('Link eliminado','info'); }}>🗑</button>
+                    <button className="btn-icon" onClick={async () => { await api.deleteSubjectLink(l.id); refresh(); showToast('Link eliminado','info'); }}>🗑</button>
                   </div>
                 ))}
               </div>}
@@ -297,13 +328,13 @@ export default function SubjectDetailView({ subjectId }) {
             <div className="files-list">
               {files.map(f => (
                 <div key={f.id} className="file-item">
-                  <span className="file-icon">{fileIcon(f.type)}</span>
+                  <span className="file-icon">{fileIcon(f.mime_type ?? f.type)}</span>
                   <div className="file-info">
                     <span className="file-name">{f.name}</span>
-                    <span className="file-meta">{humanSize(f.size)} · {new Date(f.createdAt).toLocaleDateString('es-AR')}</span>
+                    <span className="file-meta">{humanSize(f.size)} · {new Date(f.created_at * 1000).toLocaleDateString('es-AR')}</span>
                   </div>
-                  <button className="btn btn-sm btn-ghost" onClick={() => downloadFile(f.id)}>↓ Descargar</button>
-                  <button className="btn-icon" onClick={async()=>{await db.deleteFileContent(f.id);db.deleteFileMeta(f.id);refresh();showToast('Archivo eliminado','info');}}>🗑</button>
+                  <button className="btn btn-sm btn-ghost" onClick={() => downloadFile(f.id, f.name, f.mime_type)}>↓ Descargar</button>
+                  <button className="btn-icon" onClick={async()=>{await api.deleteFile(f.id);refresh();showToast('Archivo eliminado','info');}}>🗑</button>
                 </div>
               ))}
             </div>
@@ -327,14 +358,14 @@ export default function SubjectDetailView({ subjectId }) {
             {notes.length === 0 && <p className="board-empty">Agregá post-its con notas rápidas, recordatorios, ideas...</p>}
             {notes.map(n => (
               <PostIt key={n.id} note={n}
-                onUpdate={(id, data) => db.updateNote(id, data)}
-                onDelete={id => { db.deleteNote(id); refresh(); }} />
+                onUpdate={async (id, data) => { await api.updateNote(id, data); }}
+                onDelete={async id => { await api.deleteNote(id); refresh(); }} />
             ))}
           </div>
         </div>
       )}
 
-      {/* ── NOTAS/CALIFICACIONES ── */}
+      {/* ── CALIFICACIONES ── */}
       {tab === 'califs' && (
         <div>
           <div className="fechas-header">
@@ -354,11 +385,11 @@ export default function SubjectDetailView({ subjectId }) {
                   {grades.map(g => (
                     <tr key={g.id}>
                       <td>{g.name}</td>
-                      <td className={g.score>=(g.maxScore*0.6)?'grade-pass':'grade-fail'}>{g.score}</td>
-                      <td>{g.maxScore}</td>
+                      <td className={g.score>=(g.maxScore??g.max_score)*0.6?'grade-pass':'grade-fail'}>{g.score}</td>
+                      <td>{g.maxScore ?? g.max_score}</td>
                       <td>{g.weight}x</td>
-                      <td>{((g.score/g.maxScore)*100).toFixed(0)}%</td>
-                      <td><button className="btn-icon" onClick={()=>{db.deleteGrade(g.id);refresh();showToast('Nota eliminada','info');}}>🗑</button></td>
+                      <td>{((g.score/(g.maxScore??g.max_score))*100).toFixed(0)}%</td>
+                      <td><button className="btn-icon" onClick={async()=>{await api.deleteGrade(g.id);refresh();showToast('Nota eliminada','info');}}>🗑</button></td>
                     </tr>
                   ))}
                 </tbody>
